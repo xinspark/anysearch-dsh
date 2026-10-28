@@ -6,8 +6,12 @@ allowlist. Untested releases are allowed but are not verified compatible.
 These changes target plugin `0.1.8`. The npm release `0.1.7` still uses
 explicit DSH peer ranges and does not include this change.
 
-As checked on 2026-10-08, the DSH npm `latest` and `next` tags point to
-`0.2.0-rc.2`; `alpha` points to `0.2.1-alpha.1`.
+The tested matrix tracks the DSH tags on
+[GitHub](https://github.com/deepseek-ai/deepseek-harness/tags). As checked on
+2026-10-28, the newest one is `0.2.1-rc.3`. The npm registry additionally
+carries `0.2.1-rc.4` under its `next` tag (`latest` points to `0.2.1-rc.2`,
+`alpha` to `0.2.2-alpha.2`); that release passed the same gate on 2026-10-28
+but is not counted in the matrix until upstream tags it.
 Sources: [npm metadata](https://registry.npmjs.org/@deepseek-ai/dsh),
 [upstream releases](https://github.com/deepseek-ai/deepseek-harness/releases).
 
@@ -32,7 +36,7 @@ Actual API changes can still require a plugin fix.
 | 0.1.6 | alpha.1, alpha.2 |
 | 0.1.7 | alpha.1, alpha.2, rc.1, rc.2 |
 | 0.2.0 | rc.1, rc.2 |
-| 0.2.1 | alpha.1 |
+| 0.2.1 | alpha.1, rc.1, rc.2, rc.3 |
 
 The two earlier releases, `0.0.1-rc.1` and `0.0.1-rc.2`, cannot currently be
 installed with their complete published peer dependency graphs. Their
