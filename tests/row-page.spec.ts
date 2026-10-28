@@ -20,7 +20,7 @@ const shipped = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')
 }
 
 /** Evaluate the artifact as a classic script and capture its loader entry. */
-function loadArtifact(): { id: string; factory: (require: (specifier: string) => any) => any } {
+function loadArtifact(extra: Record<string, unknown> = {}): { id: string; factory: (require: (specifier: string) => any) => any } {
   const captured: { id?: string; factory?: (require: (specifier: string) => any) => any } = {}
   const loader = {
     load(entry: { id: string; factory: (require: (specifier: string) => any) => any }) {
@@ -28,7 +28,7 @@ function loadArtifact(): { id: string; factory: (require: (specifier: string) =>
       captured.factory = entry.factory
     },
   }
-  const sandbox: Record<string, unknown> = { __ModuleLoader__: loader }
+  const sandbox: Record<string, unknown> = { __ModuleLoader__: loader, ...extra }
   sandbox.globalThis = sandbox
   createContext(sandbox)
   runInContext(readFileSync(artifact, 'utf8'), sandbox)
@@ -361,6 +361,47 @@ describe('the shipped Client artifact', () => {
     expect(shipped.dsh.client?.inject).toContain('@deepseek-ai/dsh-client-ui-plugin-manager')
   })
 
+  it('installs the card rules once, from host tokens only', () => {
+    const style = { id: '', textContent: '', setAttribute: () => undefined, remove: () => undefined }
+    const appended: unknown[] = []
+    const documentStub = {
+      head: { appendChild: (node: unknown) => { appended.push(node) } },
+      createElement: () => style,
+      getElementById: () => null,
+    }
+    const { factory } = loadArtifact({ document: documentStub })
+    const primitives = createPrimitives({})
+    const module = factory((specifier: string) => {
+      if (specifier === 'react') return reactShim
+      if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return primitives
+      throw new Error(`unexpected specifier: ${specifier}`)
+    })
+    module.apply(createContext_([]).ctx)
+
+    expect(appended).toHaveLength(1)
+    expect(style.id).toBe('anysearch-client-styles')
+    const css = style.textContent
+    // The card contract itself: a hairline card, the sunken body, the 13/600
+    // title, the 12 tertiary hint, and the facts grid with a max-content label
+    // column on the value's baseline.
+    expect(css).toContain('.anysearch-card{')
+    expect(css).toContain('border:.5px solid var(--dsw-alias-border-l2)')
+    expect(css).toContain('border-radius:var(--dsw-radius-lg)')
+    expect(css).toContain('padding:14px')
+    expect(css).toContain('gap:10px')
+    expect(css).toContain('background:var(--dsw-alias-interactive-bg-hover)')
+    expect(css).toContain('border-radius:var(--dsw-radius-md)')
+    expect(css).toContain('font-size:13px;font-weight:600')
+    expect(css).toContain('font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)')
+    expect(css).toContain('grid-template-columns:max-content minmax(0,1fr)')
+    expect(css).toContain('column-gap:14px')
+    expect(css).toContain('align-items:baseline')
+    // A hex fallback belongs to no theme, and an `ops-` prefix would claim
+    // another plugin's namespace.
+    expect(css).not.toMatch(/#[0-9a-f]{3,8}/i)
+    expect(css).not.toContain('ops-')
+  })
+
   it('claims exactly the plugins.row.config key and registers both dictionaries', () => {
     const { factory } = loadArtifact()
     const dictionaries: Record<string, unknown>[] = []
@@ -534,7 +575,7 @@ describe('the shipped Client artifact', () => {
     expect(captured.disabled).toBe(false)
   })
 
-  it('puts Save and Clear on one row, Clear only when a key is configured', async () => {
+  it('puts the group in one card with the actions after it, Clear only when a key is configured', async () => {
     const { factory } = loadArtifact()
     const captured: Parameters<typeof createPrimitives>[0] = {}
     const primitives = createPrimitives(captured)
@@ -555,14 +596,25 @@ describe('the shipped Client artifact', () => {
       clearKey: async () => {},
     }
 
-    await renderUntilSettled(component, props, 8)
-    // One action row, native order: primary Save, then the secondary destructive
-    // Clear. The native SettingsForm footer holds a single action, so the pair is
-    // composed by the page rather than split across two rows.
-    const labels = (captured.buttons ?? []).map((button) => JSON.stringify(button.children))
-    expect(labels).toHaveLength(2)
-    expect(labels[0]).toContain('save')
-    expect(labels[1]).toContain('clear')
+    const tree = await renderUntilSettled(component, props, 8)
+    const text = JSON.stringify(tree)
+    // The native card contract: one card per logical group, a head that names
+    // the group, a sunken body that holds the editable field, and the actions
+    // outside the card. The tree carries roles only — every colour, radius and
+    // border lives in the sheet asserted by the next test.
+    expect(text).toContain('"anysearch-page"')
+    expect(text).toContain('"anysearch-card"')
+    expect(text).toContain('"anysearch-card-head"')
+    expect(text).toContain('"anysearch-card-title"')
+    expect(text).toContain('"anysearch-card-body"')
+    expect(text).toContain('credentialGroup')
+    // Save is the native primary button; Clear is the quiet 12px text action the
+    // native reset uses, so it does not read as a peer of Save.
+    const saveLabels = (captured.buttons ?? []).map((button) => JSON.stringify(button.children))
+    expect(saveLabels).toHaveLength(1)
+    expect(saveLabels[0]).toContain('save')
+    expect(text).toContain('anysearch-text-button')
+    expect(text).toContain('"clear"')
   })
 
   it('saves into the reference the field was showing when Save was pressed', async () => {
@@ -633,6 +685,21 @@ describe('the shipped Client artifact', () => {
     // null, so the label is asserted on the captured prop, not in the tree.
     expect(JSON.stringify(captured.buttonText)).toContain('webSourceSwitch')
     expect(captured.buttonOnClick).toBeTypeOf('function')
+    // The status surface is the same card as the configuration surface: a head
+    // with the title and the 28px action, and a sunken body holding one lead
+    // line, a facts grid of native dl rows, and one note.
+    expect(text).toContain('"anysearch-card"')
+    expect(text).toContain('"anysearch-status-head"')
+    expect(text).toContain('"anysearch-status-title"')
+    expect(text).toContain('"anysearch-status-action"')
+    expect(text).toContain('"anysearch-card-body"')
+    expect(text).toContain('"anysearch-lead"')
+    expect(text).toContain('"anysearch-facts"')
+    expect(text).toContain('"anysearch-status-note"')
+    // Facts are native description-list rows: the grid needs one wrapper per
+    // pair, so a dt/dd piling into the label column cannot happen.
+    expect(text).toContain('"dt"')
+    expect(text).toContain('"dd"')
   })
 
   it('switches to AnySearch, clearing the override when the bundle already names it', async () => {
