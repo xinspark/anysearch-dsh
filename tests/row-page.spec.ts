@@ -280,7 +280,7 @@ function createContext_(dictionaries: Record<string, unknown>[], configForms?: C
         },
       },
       slots: {
-        inject: (name: string, callback: () => unknown) => {
+        inject: (_name: string, callback: () => unknown) => {
           callback()
           return () => undefined
         },
