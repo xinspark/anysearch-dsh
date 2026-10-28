@@ -49,7 +49,11 @@ Try it without an API key.
 
 Sign up for an AnySearch account and configure an API key to get 1,000 free search calls per day.
 
-Sign up or sign in at [anysearch.com](https://anysearch.com), then visit [API Keys](https://www.anysearch.com/console/api-keys) to get one. Store the key in `$DSH_HOME/.credentials.yaml` (`~/.dsh/.credentials.yaml` by default):
+Sign up or sign in at [anysearch.com](https://anysearch.com), then visit [API Keys](https://www.anysearch.com/console/api-keys) to get one. There are two ways to store it.
+
+**From the GUI (recommended):** open **Plugins → `@anysearch/anysearch-dsh` → `web-search-anysearch` → Configure** and paste the key into the API Key field. The page writes the key into DSH's managed credentials document — never into a configuration file — under the reference the row itself names (`apiKeyEnv`, `ANYSEARCH_API_KEY` by default), and it follows that reference if you re-point it. Clearing works from the same page.
+
+**From a file:** store the key in `$DSH_HOME/.credentials.yaml` (`~/.dsh/.credentials.yaml` by default):
 
 ```yaml
 ANYSEARCH_API_KEY: "as_sk_your_key"
@@ -121,7 +125,7 @@ npx -y @deepseek-ai/dsh plugin --profile web remove @anysearch/anysearch-dsh
 - This source tree covers 28 published DSH releases, from `0.0.1-rc.5` through `0.2.1-alpha.1`, including `0.1.5-rc.2`. See the [version matrix, validation scope, and publication status](docs/dsh-compatibility.md).
 - New DSH versions are allowed by default, including alpha and rc releases; the tested matrix is not an installation allowlist. Report actual compatibility problems in [issues](https://github.com/anysearch-team/anysearch-dsh/issues).
 - URL extraction is exposed through Harness's provider-neutral `web_fetch`; the plugin does not add a duplicate `anysearch_extract` tool.
-- Configure the API key through DSH-managed credentials or an environment variable; the DSH settings page does not currently provide a third-party Provider credential field.
+- Configure the API key from the plugin's own Plugins row page, or through DSH-managed credentials or an environment variable.
 
 ## Documentation
 

@@ -112,7 +112,7 @@ npx -y @deepseek-ai/dsh --profile web
 
 匿名请求受共享免费额度和更低限流约束。
 
-当前 DSH Web 设置页不会自动为第三方 Provider 生成 AnySearch Key 输入框，因此请使用受管凭据文件或环境变量。插件需要 profile 提供标准 `credentials` 服务；官方 base profile 已包含该服务。
+在 DSH 的 **插件 → `@anysearch/anysearch-dsh` → `web-search-anysearch` → 配置** 里可以直接写入 Key：该页把 Key 写进受管凭据文件（不写配置文件），引用名取自该行自己的 `apiKeyEnv`（默认 `ANYSEARCH_API_KEY`），改引用它会跟着走。也可以改用受管凭据文件或环境变量。插件需要 profile 提供标准 `credentials` 服务；官方 base profile 已包含该服务。
 
 ## 开始使用
 

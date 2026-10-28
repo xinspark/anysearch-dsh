@@ -49,7 +49,11 @@ npx -y @deepseek-ai/dsh web
 
 注册 AnySearch 账号并配置 API Key 后，可获得每天 1000 次免费搜索调用额度。
 
-访问 [anysearch.com](https://anysearch.com) 注册并登录，然后前往 [API Keys](https://www.anysearch.com/console/api-keys) 获取。获取后，将凭据写入 `$DSH_HOME/.credentials.yaml`，默认位置是 `~/.dsh/.credentials.yaml`：
+访问 [anysearch.com](https://anysearch.com) 注册并登录，然后前往 [API Keys](https://www.anysearch.com/console/api-keys) 获取。获取后有两种写入方式。
+
+**从界面写入（推荐）：** 打开 **插件 → `@anysearch/anysearch-dsh` → `web-search-anysearch` → 配置**，把 Key 粘贴进 API Key 输入框。该页会把 Key 写入 DSH 的受管凭据文件——不会写进任何配置文件——写入的引用名就是该行自己配置的 `apiKeyEnv`（默认 `ANYSEARCH_API_KEY`），改动这个引用它会跟着走。清除也在同一页完成。
+
+**从文件写入：** 将凭据写入 `$DSH_HOME/.credentials.yaml`，默认位置是 `~/.dsh/.credentials.yaml`：
 
 ```yaml
 ANYSEARCH_API_KEY: "as_sk_your_key"
@@ -121,7 +125,7 @@ npx -y @deepseek-ai/dsh plugin --profile web remove @anysearch/anysearch-dsh
 - 当前源码覆盖从 `0.0.1-rc.5` 到 `0.2.1-alpha.1` 的 28 个已发布 DSH 版本，包括 `0.1.5-rc.2`。具体版本、验证范围和 npm 发布状态见[兼容性说明](docs/dsh-compatibility.md)。
 - 默认允许新版 DSH（包括 alpha、rc）安装，已测试版本列表不作为安装白名单；实际遇到兼容问题请提交 [issue](https://github.com/anysearch-team/anysearch-dsh/issues)。
 - 网页提取通过 Harness 原生 `web_fetch` 暴露；插件不会再增加一个重复的 `anysearch_extract` 工具。
-- 请通过 DSH 管理的凭据文件或环境变量配置 API Key；DSH 设置页当前不提供第三方 Provider 凭据输入项。
+- 请通过插件自己的插件行页面（插件 → `@anysearch/anysearch-dsh` → 配置），或 DSH 管理的凭据文件与环境变量配置 API Key。
 
 ## 文档
 

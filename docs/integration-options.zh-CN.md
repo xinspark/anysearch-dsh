@@ -78,7 +78,7 @@ AnySearch 返回的清洗正文映射为 Harness 通用 Fetch 文本，同时保
 
 - 通用 `web_search` 仍只开放 `query` 和结果数量；
 - 清洗正文和完整元数据需要使用 `anysearch_search`；
-- 当前 DSH Web 设置页不会自动为第三方 Provider 生成 AnySearch Key 输入框，需要使用 DSH 受管凭据文件或环境变量；
+- 密钥既可在插件自己的行页面（插件 → `@anysearch/anysearch-dsh` → 配置）写入，也可使用 DSH 受管凭据文件或环境变量；
 - 只适用于 DeepSeek Harness。
 
 ### 适合谁
