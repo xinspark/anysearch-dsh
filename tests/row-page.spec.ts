@@ -71,6 +71,10 @@ async function renderUntilSettled<T>(
 ): Promise<unknown> {
   let tree: unknown
   for (let pass = 0; pass < passes; pass += 1) {
+    // Buttons painted by the previous pass must not accumulate: the harness
+    // re-renders the whole tree each pass, so a sink without a reset would report
+    // one action row per pass and hand tests stale handlers.
+    buttonSink.current = []
     let cursor = 0
     let changed = false
     const effects: Array<() => unknown> = []
@@ -113,6 +117,14 @@ async function renderUntilSettled<T>(
         cursor += 1
         effects.push(effect)
       },
+      // The real store hook: read once per pass after subscribing, then drop the
+      // subscription. The harness re-renders from scratch each pass, so a live
+      // subscription would only accumulate listeners.
+      useSyncExternalStore: (subscribe: (listener: () => void) => () => void, read: () => unknown) => {
+        const off = subscribe(() => undefined)
+        off?.()
+        return read()
+      },
     }
     tree = component(props)
     await Promise.all(effects.map((effect) => effect()))
@@ -125,6 +137,11 @@ async function renderUntilSettled<T>(
   return tree
 }
 
+/** Buttons painted by the pass in flight (reset by `renderUntilSettled`). */
+const buttonSink: { current: Array<{ onClick?: (() => void) | undefined; disabled?: boolean | undefined; children?: unknown }> } = {
+  current: [],
+}
+
 /** The primitives module the page renders with, capturing the props it receives. */
 function createPrimitives(captured: {
   hint?: string | undefined
@@ -133,6 +150,11 @@ function createPrimitives(captured: {
   state?: Record<string, unknown> | undefined
   onEdit?: ((text: string) => void) | undefined
   onSave?: (() => void) | undefined
+  buttonOnClick?: (() => void) | undefined
+  buttonDisabled?: boolean | undefined
+  buttonText?: unknown
+  /** Every Button painted in order: the card composes its own action row now. */
+  buttons?: Array<{ onClick?: (() => void) | undefined; disabled?: boolean | undefined; children?: unknown }>
 }) {
   const SettingsSecretField = (props: {
     hint?: string
@@ -155,13 +177,89 @@ function createPrimitives(captured: {
     captured.onSave = props.onSave
     return props.children ?? null
   }
-  const Button = () => null
+  const Button = (props: { onClick?: () => void; disabled?: boolean; children?: unknown }) => {
+    buttonSink.current.push(props)
+    captured.buttons = buttonSink.current
+    captured.buttonOnClick = props.onClick
+    captured.buttonDisabled = props.disabled
+    captured.buttonText = props.children
+    return null
+  }
   return { SettingsForm, SettingsSecretField, Button }
 }
 
+/**
+ * The serialized schemastery envelope the Host actually sends for the web
+ * entry: a reference graph (`uid` + `refs`), not the live schema's own `dict`.
+ * Verified against schemastery 3.18.5 — a convenient `{dict: …}` fixture is
+ * exactly what let the card miss the entry on a real deployment.
+ */
+const WEB_SCHEMA = {
+  uid: 4,
+  refs: {
+    '1': { type: 'string', meta: { volatile: true } },
+    '3': { type: 'string', meta: { volatile: true } },
+    '4': { type: 'object', meta: { default: {} }, dict: { searchProvider: 1, fetchProvider: 3 } },
+  },
+}
+
+/** The shared configuration-form service, as the provider card consumes it. */
+interface ConfigFormsStub {
+  /** How many times the card asked the mirror to load. */
+  ensures: number
+  describe(): {
+    getSnapshot(): {
+      status?: string
+      view?: { namespaces?: Array<{ ns: string; value?: unknown; schema?: unknown }> }
+    }
+    subscribe(listener: () => void): () => void
+    ensure(): void
+  }
+  get(entryId: string): {
+    getSnapshot(): Record<string, unknown>
+    subscribe(listener: () => void): () => void
+    mutate(ops: unknown[], expectedRevision?: number): Promise<boolean>
+  }
+}
+
+/** A stub `ctx.configForms`: one mirror with namespace rows, one shared form. */
+function createConfigForms(options: {
+  namespaces?: Array<{ ns: string; value?: unknown; schema?: unknown }>
+  /** Omit the held document, as before the mirror's first describe read. */
+  viewLoaded?: boolean
+  /** The mirror store status while that document is missing. */
+  status?: string
+  snapshot?: Record<string, unknown>
+  mutate?: (ops: unknown[]) => Promise<boolean>
+}): ConfigFormsStub {
+  const namespaces = options.namespaces ?? []
+  const viewLoaded = options.viewLoaded ?? true
+  const status = options.status ?? 'ready'
+  const snapshot = options.snapshot ?? { status: 'ready', value: {}, writable: true }
+  const form = {
+    getSnapshot: () => snapshot,
+    subscribe: () => () => undefined,
+    mutate: options.mutate ?? (async () => true),
+  }
+  let ensures = 0
+  return {
+    get ensures() {
+      return ensures
+    },
+    describe: () => ({
+      getSnapshot: () => (viewLoaded ? { status, view: { namespaces } } : { status }),
+      subscribe: () => () => undefined,
+      ensure: () => {
+        ensures += 1
+      },
+    }),
+    get: () => form,
+  }
+}
+
 /** The Client context `apply` receives: only what the page touches. */
-function createContext_(dictionaries: Record<string, unknown>[]) {
-  const registered: { name: string; key: string; component: unknown }[] = []
+function createContext_(dictionaries: Record<string, unknown>[], configForms?: ConfigFormsStub) {
+  const registered: { name: string; key?: string | undefined; id?: string | undefined; component: unknown }[] = []
   const effects: string[] = []
   return {
     registered,
@@ -187,15 +285,57 @@ function createContext_(dictionaries: Record<string, unknown>[]) {
           return () => undefined
         },
         register: (
-          options: { name: string; key: string },
+          options: { name: string; key?: string; id?: string; order?: number; locale?: string },
           component: unknown,
         ) => {
-          registered.push({ name: options.name, key: options.key, component })
+          registered.push({ name: options.name, key: options.key, id: options.id, component })
           return component
         },
       },
+      ...(configForms === undefined ? {} : { configForms }),
     },
   }
+}
+
+/**
+ * Mount the plugin's provider card the way `plugins.detail.section` does: real
+ * artifact, stub `configForms`, and the subject the slot passes. Returns the
+ * settled tree plus the hook slots, so a test can act and re-render the same
+ * mount (the assertions are about what the page paints after an action).
+ */
+async function renderWebSource(options: {
+  namespaces?: Array<{ ns: string; value?: unknown; schema?: unknown }>
+  viewLoaded?: boolean
+  status?: string
+  snapshot?: Record<string, unknown>
+  mutate?: (ops: unknown[]) => Promise<boolean>
+  subject?: string
+}): Promise<{
+  tree: unknown
+  section: (props: Record<string, unknown>) => unknown
+  captured: Parameters<typeof createPrimitives>[0]
+  hooks: unknown[]
+  forms: ConfigFormsStub
+}> {
+  const { factory } = loadArtifact()
+  const captured: Parameters<typeof createPrimitives>[0] = {}
+  const primitives = createPrimitives(captured)
+  const module = factory((specifier: string) => {
+    if (specifier === 'react') return reactShim
+    if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return primitives
+    throw new Error(`unexpected specifier: ${specifier}`)
+  })
+  const forms = createConfigForms(options)
+  const harness = createContext_([], forms)
+  module.apply(harness.ctx)
+  const section = harness.registered.find((row) => row.name === 'plugins.detail.section')?.component as
+    | ((props: Record<string, unknown>) => unknown)
+    | undefined
+  if (section === undefined) throw new Error('the provider card was not registered')
+  const props = { subject: { pkg: options.subject ?? '@anysearch/anysearch-dsh' } }
+  const hooks: unknown[] = []
+  const tree = await renderUntilSettled(section, props, 8, hooks)
+  return { tree, section, captured, hooks, forms }
 }
 
 describe('the shipped Client artifact', () => {
@@ -234,7 +374,7 @@ describe('the shipped Client artifact', () => {
       throw new Error(`unexpected specifier: ${specifier}`)
     })
 
-    expect(module.inject).toEqual(['slots', 'locale', 'remote', 'remote.credentials'])
+    expect(module.inject).toEqual(['slots', 'locale', 'remote', 'remote.credentials', 'configForms'])
     module.apply(harness.ctx)
 
     expect(harness.registered).toHaveLength(1)
@@ -242,6 +382,11 @@ describe('the shipped Client artifact', () => {
     expect(harness.registered[0]?.key).toBe('@anysearch/anysearch-dsh#web-search-anysearch')
     const dictionary = dictionaries[0] as { zh?: Record<string, string>; en?: Record<string, string> }
     expect(Object.keys(dictionary.zh ?? {}).sort()).toEqual(Object.keys(dictionary.en ?? {}).sort())
+    // A translation that silently kept Chinese leaks into the English UI; the key
+    // sets matching is not enough to catch it.
+    for (const [key, text] of Object.entries(dictionary.en ?? {})) {
+      expect(text, `en/${key}`).not.toMatch(/[\u4e00-\u9fff]/)
+    }
     expect(dictionary.zh?.apiKeyHint).toContain('{ref}')
     expect(dictionary.en?.apiKeyHint).toContain('{ref}')
   })
@@ -389,6 +534,37 @@ describe('the shipped Client artifact', () => {
     expect(captured.disabled).toBe(false)
   })
 
+  it('puts Save and Clear on one row, Clear only when a key is configured', async () => {
+    const { factory } = loadArtifact()
+    const captured: Parameters<typeof createPrimitives>[0] = {}
+    const primitives = createPrimitives(captured)
+    const module = factory((specifier: string) => {
+      if (specifier === 'react') return reactShim
+      if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return primitives
+      throw new Error(`unexpected specifier: ${specifier}`)
+    })
+    const harness = createContext_([])
+    module.apply(harness.ctx)
+    const component = harness.registered[0]?.component as (props: Record<string, unknown>) => unknown
+    const props = {
+      view: 'page' as const,
+      form: { state: { value: { apiKeyEnv: 'CUSTOM_REF' } } },
+      t: (key: string) => key,
+      describe: async () => ({ configured: true, writable: true }),
+      setKey: async () => {},
+      clearKey: async () => {},
+    }
+
+    await renderUntilSettled(component, props, 8)
+    // One action row, native order: primary Save, then the secondary destructive
+    // Clear. The native SettingsForm footer holds a single action, so the pair is
+    // composed by the page rather than split across two rows.
+    const labels = (captured.buttons ?? []).map((button) => JSON.stringify(button.children))
+    expect(labels).toHaveLength(2)
+    expect(labels[0]).toContain('save')
+    expect(labels[1]).toContain('clear')
+  })
+
   it('saves into the reference the field was showing when Save was pressed', async () => {
     const { factory } = loadArtifact()
     const captured: Parameters<typeof createPrimitives>[0] = {}
@@ -415,12 +591,12 @@ describe('the shipped Client artifact', () => {
     }
 
     // One mount, continued: type, then re-point the row, then press the Save the
-    // earlier render painted.
+    // earlier render painted. Save is the first button of the composed action row.
     const hooks: unknown[] = []
     await renderUntilSettled(component, props, 8, hooks)
     captured.onEdit?.('as_sk_typed')
     await renderUntilSettled(component, props, 8, hooks)
-    const saveUnderOldReference = captured.onSave
+    const saveUnderOldReference = captured.buttons?.[0]?.onClick
     const repointed = { ...props, form: { state: { value: { apiKeyEnv: 'NEW_REF' } } } }
     await renderUntilSettled(component, repointed, 8, hooks)
     saveUnderOldReference?.()
@@ -430,5 +606,157 @@ describe('the shipped Client artifact', () => {
     // reference the user was shown when they pressed Save — never to the one that
     // replaced it — because that is the credential they meant to overwrite.
     expect(written).toEqual([['OLD_REF', 'as_sk_typed']])
+  })
+
+  it('reports the live native provider selection and the layer that names it', async () => {
+    const { tree, captured } = await renderWebSource({
+      namespaces: [{ ns: 'web', schema: WEB_SCHEMA }],
+      snapshot: {
+        status: 'ready',
+        value: { searchProvider: 'deepseek-official', fetchProvider: 'http' },
+        base: { searchProvider: 'anysearch', fetchProvider: 'anysearch' },
+        user: { searchProvider: 'deepseek-official' },
+        revision: 4,
+        writable: true,
+      },
+    })
+    const text = JSON.stringify(tree)
+    // Values come from the Host form, not from the profile file: the page cannot
+    // drift from what the native tools actually resolve.
+    expect(text).toContain('deepseek-official')
+    expect(text).toContain('"http"')
+    // The section names the layer that wins, so a profile override that pins the
+    // official provider is visible instead of looking like the plugin's default.
+    expect(text).toContain('webSourceProfile')
+    expect(text).toContain('webSourceOther')
+    // The harness renders function components eagerly and this Button paints
+    // null, so the label is asserted on the captured prop, not in the tree.
+    expect(JSON.stringify(captured.buttonText)).toContain('webSourceSwitch')
+    expect(captured.buttonOnClick).toBeTypeOf('function')
+  })
+
+  it('switches to AnySearch, clearing the override when the bundle already names it', async () => {
+    const calls: unknown[][] = []
+    const { captured } = await renderWebSource({
+      namespaces: [{ ns: 'web', schema: WEB_SCHEMA }],
+      snapshot: {
+        status: 'ready',
+        value: { searchProvider: 'deepseek-search-api', fetchProvider: 'deepseek-fetch-api' },
+        base: { searchProvider: 'anysearch', fetchProvider: 'anysearch' },
+        writable: true,
+      },
+      mutate: async (ops) => {
+        calls.push(ops)
+        return true
+      },
+    })
+    captured.buttonOnClick?.()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // The native Web-search switch clears an override whose value equals the
+    // composed one instead of storing a copy, so this writes unsets — one atomic
+    // mutation, both fields, same revision fence.
+    expect(calls).toEqual([[
+      { op: 'unset', path: ['searchProvider'] },
+      { op: 'unset', path: ['fetchProvider'] },
+    ]])
+  })
+
+  it('restores the native Search API pair in one mutation', async () => {
+    const calls: unknown[][] = []
+    const { captured } = await renderWebSource({
+      namespaces: [{ ns: 'web', schema: WEB_SCHEMA }],
+      snapshot: {
+        status: 'ready',
+        value: { searchProvider: 'anysearch', fetchProvider: 'anysearch' },
+        base: { searchProvider: 'anysearch', fetchProvider: 'anysearch' },
+        writable: true,
+      },
+      mutate: async (ops) => {
+        calls.push(ops)
+        return true
+      },
+    })
+    // Pointing at AnySearch: the same button reverses, writing the pair the
+    // native switch itself uses (its own PROVIDERS constant), not a guessed
+    // per-deployment id.
+    expect(JSON.stringify(captured.buttonText)).toContain('webSourceRestore')
+    captured.buttonOnClick?.()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(calls).toEqual([[
+      { op: 'set', path: ['searchProvider'], value: 'deepseek-search-api' },
+      { op: 'set', path: ['fetchProvider'], value: 'deepseek-fetch-api' },
+    ]])
+  })
+
+  it('reports a refused write instead of claiming the switch', async () => {
+    const { section, hooks, captured } = await renderWebSource({
+      namespaces: [{ ns: 'web', schema: WEB_SCHEMA }],
+      snapshot: { status: 'ready', value: { searchProvider: 'deepseek-official' }, writable: true },
+      mutate: async () => false,
+    })
+    captured.buttonOnClick?.()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const tree = await renderUntilSettled(section, { subject: { pkg: '@anysearch/anysearch-dsh' } }, 8, hooks)
+    // A version conflict is a refusal, not a success: the Host re-read and the
+    // copy says the configuration may have moved.
+    expect(JSON.stringify(tree)).toContain('webSourceRefused')
+  })
+
+  it('keeps the card read-only when the shared form cannot write', async () => {
+    const { tree, captured } = await renderWebSource({
+      namespaces: [{ ns: 'web', schema: WEB_SCHEMA }],
+      snapshot: { status: 'ready', value: {}, writable: false },
+    })
+    expect(JSON.stringify(tree)).toContain('webSourceReadOnly')
+    expect(captured.buttonOnClick).toBeUndefined()
+  })
+
+  it('says so when no web entry is served, and stays silent on another plugin page', async () => {
+    // Our own page without the seam: a readable line beats an empty render —
+    // otherwise a missing form looks exactly like a card that was never built.
+    const absent = await renderWebSource({ namespaces: [] })
+    expect(JSON.stringify(absent.tree)).toContain('webSourceUnavailable')
+
+    const elsewhere = await renderWebSource({
+      namespaces: [{ ns: 'web', schema: WEB_SCHEMA }],
+      subject: 'someone-else',
+    })
+    expect(elsewhere.tree).toBeNull()
+  })
+
+  it('asks the settings mirror to load before it reports the provider state', async () => {
+    // The mirror reads nothing until someone asks. Discovery cannot call `get()`
+    // before it knows the entry id, so the card must ask the mirror itself —
+    // without this it reported "unavailable" on every deployment.
+    const { forms } = await renderWebSource({
+      namespaces: [{ ns: 'web', schema: WEB_SCHEMA }],
+      snapshot: {
+        status: 'ready',
+        value: { searchProvider: 'deepseek-official', fetchProvider: 'http' },
+        writable: true,
+      },
+    })
+    expect(forms.ensures).toBeGreaterThan(0)
+  })
+
+  it('shows the loading copy until the mirror holds its first document', async () => {
+    const { tree } = await renderWebSource({ viewLoaded: false, status: 'loading' })
+    // A read in flight is a different fact from a missing seam, and the copy
+    // must not collapse the two.
+    expect(JSON.stringify(tree)).toContain('webSourceLoading')
+  })
+
+  it('finds the web entry from its live values when the schema envelope is absent', async () => {
+    // The second, independent identifier: a deployment that omits `schema`
+    // still names the entry by its resolved value keys.
+    const { tree } = await renderWebSource({
+      namespaces: [{ ns: 'web', value: { searchProvider: 'deepseek-official', fetchProvider: 'http' } }],
+      snapshot: {
+        status: 'ready',
+        value: { searchProvider: 'deepseek-official', fetchProvider: 'http' },
+        writable: true,
+      },
+    })
+    expect(JSON.stringify(tree)).toContain('deepseek-official')
   })
 })

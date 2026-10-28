@@ -22,6 +22,12 @@
  * verbatim, so no Client bundler is added to this repository. The IIFE keeps
  * every name out of the page's global namespace and out of the generated
  * declaration file.
+ *
+ * A second contribution, `plugins.detail.section`, reports which provider the
+ * native `web_search` / `web_fetch` resolve and offers the one reversible
+ * switch. It reads and writes through the official `ctx.configForms` service —
+ * the same settings mirror every official settings page derives from — so no
+ * profile patch is parsed and no write path is invented here.
  */
 void (function anysearchApiKeyRow() {
   /** Package name; also the id this Client artifact must register its factory under. */
@@ -45,6 +51,25 @@ void (function anysearchApiKeyRow() {
 
   /** Dictionary namespace owned by this page. */
   const NS = 'settings.anysearchApiKey'
+
+  /**
+   * This plugin's provider id. The Host half registers the same id for native
+   * search and native fetch, so one switch covers both tools.
+   */
+  const ANYSEARCH_PROVIDER = 'anysearch'
+
+  /**
+   * The pair the native Web-search settings switch writes for its "Search API"
+   * mode — copied from that page's own `PROVIDERS` map
+   * (`@deepseek-ai/dsh-client-ui-settings-web-search`). The other official mode
+   * is `deepseek-official` / `http` (Messages search + local HTTP fetch); this
+   * card restores the Search API pair because that is the switch's own default
+   * target, and it is a native constant rather than a guess about a deployment.
+   */
+  const OFFICIAL_PROVIDERS = {
+    searchProvider: 'deepseek-search-api',
+    fetchProvider: 'deepseek-fetch-api',
+  } as const
 
   /**
    * A configuration field the loader hands over as a live reference instead of a
@@ -93,7 +118,7 @@ void (function anysearchApiKeyRow() {
 
   /** The slice of the Client context this page uses. */
   interface ClientContext {
-    effect(callback: () => (() => void) | void, label?: string): void
+    effect(callback: (() => void) | void, label?: string): void
     locale: {
       bind(ns: string): (key: string, params?: Record<string, unknown>) => string
       register(ns: string, dictionaries: { zh: Record<string, string>; en: Record<string, string> }): () => void
@@ -101,11 +126,26 @@ void (function anysearchApiKeyRow() {
     slots: {
       inject(name: string, callback: () => unknown): () => void
       register(
-        options: { name: string; key: string; locale: string; inject: () => Record<string, unknown> },
+        options: {
+          name: string
+          /** Row contributions claim a keyed slot; section contributions carry an id instead. */
+          key?: string
+          /** Stable id for `plugins.detail.section` contributions. */
+          id?: string
+          /** Position among the detail page's sections. */
+          order?: number
+          locale: string
+          inject?: () => Record<string, unknown>
+        },
         component: unknown,
       ): unknown
     }
     remote?: { credentials?: CredentialsSeam }
+    /**
+     * The official shared configuration-form service. Absent on a host that does
+     * not serve the settings UI; the detail section then registers nothing.
+     */
+    configForms?: ConfigFormsService | undefined
   }
 
   /** The slot's own props plus this page's inject face. */
@@ -131,6 +171,67 @@ void (function anysearchApiKeyRow() {
     SettingsForm: unknown
     SettingsSecretField: unknown
     Button: unknown
+  }
+
+  /** One namespace row of the official settings describe mirror. */
+  interface ConfigNamespaceView {
+    ns: string
+    /** Resolved live values of the entry's volatile fields. */
+    value?: unknown
+    /** Serialized schemastery envelope (`{uid, refs}`), not a live schema. */
+    schema?: unknown
+  }
+
+  /**
+   * The official shared configuration-form service (`ctx.configForms`). One
+   * mirror feeds every settings surface, so this page reads exactly what the
+   * official settings page reads instead of re-parsing the profile patch.
+   */
+  interface ConfigFormsService {
+    describe(): {
+      getSnapshot(): {
+        status?: string | undefined
+        view?: { namespaces?: ConfigNamespaceView[]; writable?: boolean } | null | undefined
+      }
+      subscribe(listener: () => void): () => void
+      /** Start the mirror's one describe read when nothing is held yet. */
+      ensure(): unknown
+    }
+    get(entryId: string): ConfigFormController
+  }
+
+  /** Live snapshot of one Host entry's shared form. */
+  interface ConfigFormSnapshot {
+    status?: string | undefined
+    /** Effective live values (what the Host service actually resolves). */
+    value?: Record<string, unknown> | undefined
+    /** Inherited values from the bundle layers. */
+    base?: Record<string, unknown> | undefined
+    /** The profile-patch override layer. */
+    user?: Record<string, unknown> | undefined
+    revision?: number | undefined
+    writable?: boolean | undefined
+  }
+
+  /** One field operation accepted by the shared write queue. */
+  type ConfigFormOp =
+    | { op: 'set'; path: string[]; value: unknown }
+    | { op: 'unset'; path: string[] }
+
+  /**
+   * The shared form for one Host entry. Reads ride the settings mirror; writes
+   * ride the settings provider's own queue, which fences each write with the
+   * revision it read and re-reads after a refusal — no CAS logic lives here.
+   */
+  interface ConfigFormController {
+    getSnapshot(): ConfigFormSnapshot
+    subscribe(listener: () => void): () => void
+    mutate(ops: ConfigFormOp[], expectedRevision?: number): Promise<boolean>
+  }
+
+  /** Props a `plugins.detail.section` contribution receives. */
+  interface DetailSectionProps {
+    subject?: { pkg?: string | { name?: string } } | undefined
   }
 
   /**
@@ -185,6 +286,23 @@ void (function anysearchApiKeyRow() {
     clearCancel: '取消',
     cleared: '已清除密钥；搜索回到匿名限额。',
     clearFailed: '清除失败：',
+    webSourceTitle: '原生搜索源',
+    webSourceSearch: 'web_search',
+    webSourceFetch: 'web_fetch',
+    webSourceLayer: '配置来源',
+    webSourceProfile: '本 profile 的补丁覆盖',
+    webSourceBundle: 'bundle 默认（未被覆盖）',
+    webSourceNone: '未指定（按注册情况自动选择）',
+    webSourceAnysearch: '原生工具当前由 AnySearch 提供。',
+    webSourceOther: '原生工具当前未指向 AnySearch。',
+    webSourceSwitch: '切换为 AnySearch',
+    webSourceRestore: '恢复官方 provider',
+    webSourceBusy: '正在写入…',
+    webSourceRefused: '写入未成功；配置可能在别处被改动，已重新读取。',
+    webSourceReadOnly: '当前配置只读，无法在这里切换。',
+    webSourceLoading: '正在读取搜索源状态…',
+    webSourceUnavailable: '本部署没有把这个原生搜索源暴露成可编辑配置，因此无法在这里显示或切换。',
+    webSourceHint: '这两个字段是 volatile：切换后下一次搜索即生效，无需重启。若本插件被停用，原生工具会报 WEB_PROVIDER_CONFIGURED_MISSING。',
   }
 
   /** English copy; keys must match `zh` exactly. */
@@ -208,6 +326,23 @@ void (function anysearchApiKeyRow() {
     clearCancel: 'Cancel',
     cleared: 'Key cleared; searches are back to the anonymous limits.',
     clearFailed: 'Clear failed: ',
+    webSourceTitle: 'Native provider',
+    webSourceSearch: 'web_search',
+    webSourceFetch: 'web_fetch',
+    webSourceLayer: 'Configuration layer',
+    webSourceProfile: 'Overridden by this profile patch',
+    webSourceBundle: 'Bundle default (not overridden)',
+    webSourceNone: 'not specified (picked from what is registered)',
+    webSourceAnysearch: 'AnySearch currently serves the native tools.',
+    webSourceOther: 'The native tools do not point at AnySearch.',
+    webSourceSwitch: 'Switch to AnySearch',
+    webSourceRestore: 'Restore the official providers',
+    webSourceBusy: 'Writing…',
+    webSourceRefused: 'The write did not go through; the configuration may have changed elsewhere and has been re-read.',
+    webSourceReadOnly: 'This configuration is read-only; it cannot be switched here.',
+    webSourceLoading: 'Reading the provider state…',
+    webSourceUnavailable: 'This deployment does not expose the native provider selection as an editable form, so it cannot be shown or switched here.',
+    webSourceHint: 'Both fields are volatile: the next search applies the switch, with no restart. If this plugin is disabled, the native tools report WEB_PROVIDER_CONFIGURED_MISSING.',
   }
 
   /** Flatten anything thrown — an Error, a Remote refusal, or a bare object — into one line of copy. */
@@ -296,6 +431,95 @@ void (function anysearchApiKeyRow() {
     }
   }
 
+  /** Whether an object layer carries the named field (the layer may be absent). */
+  function layerHas(layer: unknown, field: string): boolean {
+    return layer !== null && typeof layer === 'object' && field in (layer as Record<string, unknown>)
+  }
+
+  /**
+   * Whether a serialized schemastery envelope declares the named field.
+   *
+   * The wire shape is a reference envelope — `{uid, refs: {"4": {type:"object",
+   * dict: {searchProvider: 1}}}}` — not the live schema's own `dict`, so a
+   * direct `schema.dict` lookup finds nothing (verified against schemastery
+   * 3.18.5). Walk the envelope instead of assuming one layout.
+   */
+  function schemaDeclares(schema: unknown, field: string): boolean {
+    const seen = new Set<object>()
+    const visit = (node: unknown): boolean => {
+      if (node === null || typeof node !== 'object' || seen.has(node)) return false
+      seen.add(node)
+      const record = node as Record<string, unknown>
+      for (const key of ['dict', 'properties']) {
+        const map = record[key]
+        if (map !== null && typeof map === 'object' && field in (map as Record<string, unknown>)) return true
+      }
+      for (const value of Object.values(record)) {
+        if (value !== null && typeof value === 'object' && visit(value)) return true
+      }
+      return false
+    }
+    return visit(schema)
+  }
+
+  /**
+   * The Host entry whose shared form carries the native web provider selection.
+   *
+   * Two independent facts identify it, because either can be absent: the
+   * resolved `value` keys (the entry's live selection) and the serialized
+   * schema (which still names the fields when neither is configured). Never a
+   * guessed entry id.
+   */
+  function webEntryOf(forms: ConfigFormsService): string | undefined {
+    const snapshot = forms.describe().getSnapshot()
+    for (const row of snapshot?.view?.namespaces ?? []) {
+      if (layerHas(row.value, 'searchProvider') || layerHas(row.value, 'fetchProvider')) return row.ns
+    }
+    for (const row of snapshot?.view?.namespaces ?? []) {
+      if (schemaDeclares(row.schema, 'searchProvider')) return row.ns
+    }
+    return undefined
+  }
+
+  /** One string field out of a form value layer, or '' when it is absent. */
+  function fieldOf(layer: Record<string, unknown> | undefined, field: string): string {
+    const value = layer === undefined ? undefined : layer[field]
+    return typeof value === 'string' ? value : ''
+  }
+
+  /** What the detail section reports, derived only from the official form layers. */
+  interface WebSourceState {
+    search: string
+    fetch: string
+    /** True when the profile patch (not the bundle) names the fields. */
+    overridden: boolean
+    /** True when both native tools already resolve through this plugin. */
+    pointing: boolean
+  }
+
+  /** Fold one form snapshot into the section's facts. */
+  function webSourceOf(snapshot: ConfigFormSnapshot): WebSourceState {
+    const search = fieldOf(snapshot.value, 'searchProvider')
+    const fetchProvider = fieldOf(snapshot.value, 'fetchProvider')
+    const user = snapshot.user ?? {}
+    return {
+      search,
+      fetch: fetchProvider,
+      overridden: user.searchProvider !== undefined || user.fetchProvider !== undefined,
+      pointing: search === ANYSEARCH_PROVIDER && fetchProvider === ANYSEARCH_PROVIDER,
+    }
+  }
+
+  /**
+   * The snapshot the section reports while the Host serves no web form. A stable
+   * object on purpose: a fresh `{status:'absent'}` per read would make React's
+   * external-store check see a change on every render.
+   */
+  const ABSENT_SNAPSHOT: ConfigFormSnapshot = { status: 'absent' }
+
+  /** The snapshot shown while the mirror's first describe read is in flight. */
+  const LOADING_SNAPSHOT: ConfigFormSnapshot = { status: 'loading' }
+
   // `any` on the `require` result is the module table's own contract: it hands
   // back an untyped module namespace, and every React surface this page touches
   // is re-typed below (`useState`, `useEffect`, `useRef`, `useCallback`) before
@@ -323,7 +547,9 @@ void (function anysearchApiKeyRow() {
       // at materialization; the catch keeps the row alive and the card
       // degrades to a readable notice below.
       const primitives = tryRequirePrimitives(require)
-      const SettingsForm = primitives?.SettingsForm
+      // `SettingsForm` stays part of the required set above (the host ships it),
+      // but this card composes its own action row: the native footer holds one
+      // action, and Save + Clear belong on one line.
       const SettingsSecretField = primitives?.SettingsSecretField
       const Button = primitives?.Button
 
@@ -333,6 +559,10 @@ void (function anysearchApiKeyRow() {
       const useEffect = React.useEffect as (effect: () => (() => void) | void, deps?: unknown[]) => void
       const useRef = React.useRef as <T>(initial: T) => { current: T }
       const useCallback = React.useCallback as <T extends (...args: never[]) => unknown>(callback: T, deps: unknown[]) => T
+      const useSyncExternalStore = React.useSyncExternalStore as <T>(
+        subscribe: (listener: () => void) => () => void,
+        read: () => T,
+      ) => T
 
       /** The row's configuration page: one write-only key field, plus the clear that removes it. */
       function ApiKeyCard(props: CardProps) {
@@ -511,95 +741,90 @@ void (function anysearchApiKeyRow() {
         const staged = draft.ref === ref ? draft.text : ''
 
         const busy = phase === 'saving' || phase === 'clearing'
-        const labels = {
-          unavailable: credential.error === '' ? t('loading') : `${t('loadFailed')} ${credential.error}`,
-          readOnly: t('readOnly'),
-          saveFailed: t('saveFailed'),
-          save: t('save'),
-          saving: t('saving'),
-        }
-        const state = {
-          available: credential.loaded,
-          writable: credential.writable,
-          dirty: staged.trim().length > 0,
-          invalid: false,
-          saving: busy,
-          failed: phase === 'failed',
-        }
 
-        const controls: unknown[] = [
-          h(SettingsSecretField, {
-            key: 'key',
-            id: 'anysearch-api-key',
-            label: t('apiKey'),
-            hint: t('apiKeyHint', { ref }),
-            disabled: !credential.writable || busy,
-            text: staged,
-            configured: credential.configured,
-            stateLabel: credential.configured ? t('keySet') : t('keyUnset'),
-            onEdit: (text: string) => {
-              setDraft({ ref, text })
-              if (!busy) {
-                setPhase('idle')
-                setFailure('')
-              }
-            },
-          }),
-        ]
+        // Save stays the primary action and Clear the secondary destructive one,
+        // side by side — the same pairing the native status cards use. The native
+        // SettingsForm owns its footer for Save alone, so the pair is composed
+        // here from the same official Button: one row, native variants, and still
+        // a single write path per action.
+        const dirty = staged.trim().length > 0
+        const blocked = !dirty || busy
 
-        // Clearing is destructive and immediate, so it takes a second click. It is
-        // offered only where a write is possible at all: a key supplied by the
-        // launching environment cannot be removed from here.
-        if (credential.configured && credential.writable) {
-          controls.push(
-            h(
-              'div',
-              { key: 'clear', style: { display: 'flex', alignItems: 'center', gap: '8px' } },
-              confirming
-                ? [
-                    h(
-                      Button,
-                      {
-                        key: 'confirm',
-                        variant: 'primary',
-                        size: 'sm',
-                        disabled: busy,
-                        onClick: () => {
-                          void settle(() => props.clearKey(ref), 'clear')
-                        },
-                      },
-                      t('clearConfirm'),
-                    ),
-                    h(
-                      Button,
-                      {
-                        key: 'cancel',
-                        variant: 'ghost',
-                        size: 'sm',
-                        disabled: busy,
-                        onClick: () => {
-                          setConfirming(false)
-                        },
-                      },
-                      t('clearCancel'),
-                    ),
-                  ]
-                : h(
-                    Button,
-                    {
-                      key: 'ask',
-                      variant: 'outline',
-                      size: 'sm',
-                      disabled: busy,
-                      onClick: () => {
-                        setConfirming(true)
-                      },
+        const status = credential.loaded
+          ? null
+          : h(
+              'p',
+              {
+                key: 'status',
+                role: 'status',
+                style: {
+                  margin: '0',
+                  fontSize: '13px',
+                  lineHeight: '20px',
+                  // Native roles: an empty/reading line is tertiary, a refusal is
+                  // the error colour (see the reference card's .dw7-empty /
+                  // .dw7-error rules).
+                  color:
+                    credential.error === ''
+                      ? 'var(--dsw-alias-label-tertiary)'
+                      : 'var(--dsw-alias-state-error-primary)',
+                },
+              },
+              credential.error === '' ? t('loading') : `${t('loadFailed')} ${credential.error}`,
+            )
+        // A failed read says nothing about writability, so the field stays on
+        // screen and the write reports its own refusal. Only the first read, with
+        // nothing to contradict yet, withholds the form.
+        const showForm = credential.loaded || credential.error !== ''
+
+        // Built at the point of use, so the elements are created in the same
+        // order they are painted (Save first, then Clear).
+        const clearActions = (): unknown[] => (credential.configured && credential.writable
+          ? confirming
+            ? [
+                h(
+                  Button,
+                  {
+                    key: 'confirm',
+                    variant: 'primary',
+                    size: 'sm',
+                    disabled: busy,
+                    onClick: () => {
+                      void settle(() => props.clearKey(ref), 'clear')
                     },
-                    t('clear'),
-                  ),
-            ),
-          )
-        }
+                  },
+                  t('clearConfirm'),
+                ),
+                h(
+                  Button,
+                  {
+                    key: 'cancel',
+                    variant: 'ghost',
+                    size: 'sm',
+                    disabled: busy,
+                    onClick: () => {
+                      setConfirming(false)
+                    },
+                  },
+                  t('clearCancel'),
+                ),
+              ]
+            : [
+                h(
+                  Button,
+                  {
+                    key: 'ask',
+                    variant: 'ghost',
+                    size: 'sm',
+                    disabled: busy,
+                    onClick: () => {
+                      setConfirming(true)
+                    },
+                  },
+                  t('clear'),
+                ),
+              ]
+          : [])
 
         // One line under the form: what just happened, in that order of precedence.
         // A success is only claimed while the badge actually reflects it
@@ -607,30 +832,64 @@ void (function anysearchApiKeyRow() {
         // "saved" notice.
         const notice = noticeOf(credential.loaded, phase, failure, t)
 
-        return h('div', { style: { display: 'flex', flexDirection: 'column' } }, [
-          h(
-            SettingsForm,
-            {
-              key: 'form',
-              labels,
-              state,
-              onSave: () => {
-                // An empty field is not a write: the form gates Save on `dirty`,
-                // and removing a key is the Clear control's job. Writing '' into a
-                // reference the user never targeted would be a destructive no-op
-                // nobody asked for.
-                if (staged.trim().length === 0) return
-                void settle(() => props.setKey(ref, staged.trim()), 'save')
-              },
-              onDiscard: () => {
-                setDraft({ ref, text: '' })
-                setPhase('idle')
-                setFailure('')
-                setConfirming(false)
-              },
-            },
-            controls,
-          ),
+        return h('div', { key: 'form', style: { display: 'flex', flexDirection: 'column', gap: '8px' } }, [
+          status,
+          showForm
+            ? h(SettingsSecretField, {
+                key: 'key',
+                id: 'anysearch-api-key',
+                label: t('apiKey'),
+                hint: t('apiKeyHint', { ref }),
+                disabled: !credential.writable || busy,
+                text: staged,
+                configured: credential.configured,
+                stateLabel: credential.configured ? t('keySet') : t('keyUnset'),
+                onEdit: (text: string) => {
+                  setDraft({ ref, text })
+                  if (!busy) {
+                    setPhase('idle')
+                    setFailure('')
+                  }
+                },
+              })
+            : null,
+          showForm && !credential.writable
+            ? h(
+                'p',
+                {
+                  key: 'readonly',
+                  role: 'status',
+                  style: { margin: '0', fontSize: '13px', lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' },
+                },
+                t('readOnly'),
+              )
+            : null,
+          showForm
+            ? h(
+                'div',
+                { key: 'actions', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+                [
+                  h(
+                    Button,
+                    {
+                      key: 'save',
+                      variant: 'primary',
+                      size: 'sm',
+                      disabled: blocked,
+                      onClick: () => {
+                        // An empty field is not a write: removing a key is the
+                        // Clear control's job, and writing '' would be a
+                        // destructive no-op nobody asked for.
+                        if (!dirty) return
+                        void settle(() => props.setKey(ref, staged.trim()), 'save')
+                      },
+                    },
+                    busy ? t('saving') : t('save'),
+                  ),
+                  ...clearActions(),
+                ],
+              )
+            : null,
           notice === ''
             ? null
             : h(
@@ -639,7 +898,7 @@ void (function anysearchApiKeyRow() {
                   key: 'notice',
                   role: 'status',
                   style: {
-                    margin: '8px 0 0',
+                    margin: '0',
                     fontSize: '13px',
                     lineHeight: '20px',
                     color:
@@ -658,7 +917,273 @@ void (function anysearchApiKeyRow() {
        * declared: reading `ctx.remote` without them throws, and this page has
        * nothing to show if that happens.
        */
-      const inject = ['slots', 'locale', 'remote', 'remote.credentials']
+      /**
+       * The plugin page's provider card: which provider the native `web_search`
+       * and `web_fetch` resolve, which layer names that selection, and the one
+       * reversible switch. Reads ride the official settings mirror; the write
+       * rides that form's own revision-fenced queue, so a concurrent edit is
+       * refused and re-read instead of being silently overwritten.
+       *
+       * The native web entry is discovered from the mirror schema on every read,
+       * so a deployment that never composes it renders nothing here — the card
+       * stays invisible rather than guessing an entry id that may not exist.
+       */
+      function createWebSourceSection(
+        forms: ConfigFormsService,
+        translate: (key: string) => string,
+      ): (props: DetailSectionProps) => unknown {
+        function WebSourceSection(props: DetailSectionProps) {
+          const subject = props === undefined ? undefined : props.subject?.pkg
+          const active =
+            subject === PACKAGE ||
+            (typeof subject === 'object' && subject !== null && subject.name === PACKAGE)
+
+          function read(): ConfigFormSnapshot {
+            if (!active) return ABSENT_SNAPSHOT
+            const mirror = forms.describe()
+            // The mirror loads nothing until someone asks: the official forms do
+            // this inside `get()`, which cannot run before the entry is found.
+            // Without this line discovery would wait on a document nobody ever
+            // requests, and the card would report "unavailable" forever on a
+            // deployment that serves the form just fine.
+            void mirror.ensure()
+            const state = mirror.getSnapshot()
+            if (state.view === undefined) {
+              return state.status === 'error' ? ABSENT_SNAPSHOT : LOADING_SNAPSHOT
+            }
+            const entry = webEntryOf(forms)
+            return entry === undefined ? ABSENT_SNAPSHOT : forms.get(entry).getSnapshot()
+          }
+          // Identity changes on purpose: discovery depends on the mirror, the
+          // values on the entry's form, and the entry can start being served
+          // later. React re-subscribes when this changes, which is exactly the
+          // refresh this card needs (both stores are cheap and local).
+          function subscribe(listener: () => void): () => void {
+            const offMirror = forms.describe().subscribe(listener)
+            const entry = active ? webEntryOf(forms) : undefined
+            if (entry === undefined) return offMirror
+            const offForm = forms.get(entry).subscribe(listener)
+            return () => {
+              offMirror()
+              offForm()
+            }
+          }
+
+          const snapshot = useSyncExternalStore(subscribe, read)
+          const [busy, setBusy] = useState(false)
+          const [failure, setFailure] = useState('')
+
+          // Another plugin's page: nothing to say, and nothing to leave behind.
+          if (!active) return null
+          if (snapshot.status === 'absent') {
+            // Our own page, but the Host serves no web-selection form. Say so:
+            // a silent empty render would make a missing seam indistinguishable
+            // from a card that was never built.
+            return h(
+              'p',
+              {
+                role: 'status',
+                style: { margin: '0', fontSize: '13px', lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' },
+              },
+              translate('webSourceUnavailable'),
+            )
+          }
+          if (snapshot.status === 'loading') {
+            return h(
+              'p',
+              {
+                role: 'status',
+                style: { margin: '0', fontSize: '13px', lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' },
+              },
+              translate('webSourceLoading'),
+            )
+          }
+
+          const source = webSourceOf(snapshot)
+          const fact = (label: string, value: string) => [
+            h('dt', { key: `${label}-label`, style: { color: 'var(--dsw-alias-label-tertiary)' } }, label),
+            h('dd', { key: `${label}-value`, style: { margin: '0', overflowWrap: 'anywhere' }, title: value }, value),
+          ]
+          const current = (value: string) => (value === '' ? translate('webSourceNone') : value)
+          const readOnly = snapshot.writable === false
+
+          // The composed value (bundle layers) is what the profile override sits
+          // on. The native Web-search switch clears the override when a selection
+          // equals it, instead of storing a copy — so switching back to AnySearch
+          // removes the profile entry rather than pinning the same value twice.
+          const composed = {
+            searchProvider: fieldOf(snapshot.base, 'searchProvider'),
+            fetchProvider: fieldOf(snapshot.base, 'fetchProvider'),
+          }
+          const target = source.pointing
+            ? { searchProvider: OFFICIAL_PROVIDERS.searchProvider, fetchProvider: OFFICIAL_PROVIDERS.fetchProvider }
+            : { searchProvider: ANYSEARCH_PROVIDER, fetchProvider: ANYSEARCH_PROVIDER }
+          const opsFor = (next: { searchProvider: string; fetchProvider: string }): ConfigFormOp[] => {
+            const ops: ConfigFormOp[] = []
+            for (const field of ['searchProvider', 'fetchProvider'] as const) {
+              const value = next[field]
+              ops.push(
+                value === composed[field] && composed[field] !== ''
+                  ? { op: 'unset', path: [field] }
+                  : { op: 'set', path: [field], value },
+              )
+            }
+            return ops
+          }
+
+          async function switchProviders(): Promise<void> {
+            const entry = webEntryOf(forms)
+            if (entry === undefined) return
+            setBusy(true)
+            setFailure('')
+            try {
+              // One atomic mutation: both fields apply under one revision fence,
+              // so search and fetch can never end up on different providers.
+              // A refusal means someone else wrote first; the form re-reads and
+              // the copy says the state may have moved.
+              const accepted = await forms.get(entry).mutate(opsFor(target))
+              if (!accepted) setFailure(translate('webSourceRefused'))
+            } catch {
+              // The page owns the wording, not the Host's raw error: a stack-ish
+              // sentence here is developer copy on a user surface.
+              setFailure(translate('webSourceRefused'))
+            } finally {
+              setBusy(false)
+            }
+          }
+
+          // Native status-panel idiom (the voice-input card): the action lives at
+          // the top right of the title row, and the state that would replace it
+          // collapses to one note line at the bottom of the panel. The action is
+          // two-way: to AnySearch, or back to the native Search API pair.
+          const action =
+            Button === undefined || readOnly
+              ? null
+              : h(
+                  Button,
+                  {
+                    key: 'switch',
+                    variant: 'outline',
+                    size: 'sm',
+                    disabled: busy,
+                    onClick: () => {
+                      void switchProviders()
+                    },
+                  },
+                  busy
+                    ? translate('webSourceBusy')
+                    : source.pointing
+                      ? translate('webSourceRestore')
+                      : translate('webSourceSwitch'),
+                )
+          const note = readOnly ? translate('webSourceReadOnly') : translate('webSourceHint')
+
+          return h(
+            'section',
+            { key: 'web-source', style: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '0' } },
+            [
+              h(
+                'div',
+                {
+                  key: 'head',
+                  style: { display: 'flex', alignItems: 'center', gap: '10px', minWidth: '0' },
+                },
+                [
+                  h(
+                    'h3',
+                    {
+                      key: 'title',
+                      style: {
+                        margin: '0',
+                        color: 'var(--dsw-alias-label-primary)',
+                        fontSize: '14px',
+                        fontWeight: 500,
+                        lineHeight: '20px',
+                      },
+                    },
+                    translate('webSourceTitle'),
+                  ),
+                  action === null
+                    ? null
+                    : h('div', { key: 'action', style: { marginLeft: 'auto', flex: 'none' } }, action),
+                ],
+              ),
+              h(
+                'div',
+                {
+                  key: 'panel',
+                  style: {
+                    boxSizing: 'border-box',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                    padding: '14px',
+                    border: '.5px solid var(--dsw-alias-border-l1)',
+                    borderRadius: '10px',
+                    // Native panel surface: the 8% white overlay the reference
+                    // status cards use (sampled as rgb(39,39,41) over the page
+                    // background), not a solid layer token. On a filled surface
+                    // the native role for body text is the secondary label, so
+                    // the lead line and values inherit it instead of the primary
+                    // colour the page uses.
+                    background: 'var(--dsw-alias-interactive-bg-hover)',
+                    color: 'var(--dsw-alias-label-secondary)',
+                    fontSize: '13px',
+                    minWidth: '0',
+                  },
+                },
+                [
+                  // Lead line first: the panel opens with what the reader needs to
+                  // know, then the facts, then one note — the native order.
+                  h(
+                    'p',
+                    { key: 'verdict', style: { margin: '0', lineHeight: '20px', color: 'var(--dsw-alias-label-primary)' } },
+                    source.pointing ? translate('webSourceAnysearch') : translate('webSourceOther'),
+                  ),
+                  h(
+                    'dl',
+                    {
+                      key: 'facts',
+                      style: { display: 'grid', gridTemplateColumns: '72px minmax(0, 1fr)', gap: '6px 10px', margin: '0' },
+                    },
+                    [
+                      ...fact(translate('webSourceSearch'), current(source.search)),
+                      ...fact(translate('webSourceFetch'), current(source.fetch)),
+                      ...fact(
+                        translate('webSourceLayer'),
+                        source.overridden ? translate('webSourceProfile') : translate('webSourceBundle'),
+                      ),
+                    ],
+                  ),
+                  h(
+                    'p',
+                    {
+                      key: 'note',
+                      style: { margin: '0', color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', lineHeight: '1.6' },
+                    },
+                    note,
+                  ),
+                  failure === ''
+                    ? null
+                    : h(
+                        'p',
+                        {
+                          key: 'failure',
+                          role: 'alert',
+                          style: { margin: '0', lineHeight: '20px', color: 'var(--dsw-alias-state-error-primary)' },
+                        },
+                        failure,
+                      ),
+                ],
+              ),
+            ],
+          )
+        }
+
+        return WebSourceSection
+      }
+
+      const inject = ['slots', 'locale', 'remote', 'remote.credentials', 'configForms']
 
       /**
        * Register the row page and the copy it renders. Every credential action
@@ -691,6 +1216,24 @@ void (function anysearchApiKeyRow() {
             ApiKeyCard,
           ),
         )
+        // The provider card is an enhancement, not a prerequisite: a deployment
+        // whose settings UI serves no shared configuration form (older DSH)
+        // simply never registers it, and the row page above keeps working.
+        const forms = ctx.configForms
+        if (forms !== undefined && typeof forms.get === 'function' && typeof forms.describe === 'function') {
+          const WebSourceSection = createWebSourceSection(forms, t)
+          ctx.slots.inject('plugins.detail.section', () =>
+            ctx.slots.register(
+              {
+                name: 'plugins.detail.section',
+                id: `${PACKAGE}.web-source`,
+                order: 50,
+                locale: NS,
+              },
+              WebSourceSection,
+            ),
+          )
+        }
       }
 
       return { inject, apply }

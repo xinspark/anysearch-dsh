@@ -126,6 +126,7 @@ npx -y @deepseek-ai/dsh plugin --profile web remove @anysearch/anysearch-dsh
 - 默认允许新版 DSH（包括 alpha、rc）安装，已测试版本列表不作为安装白名单；实际遇到兼容问题请提交 [issue](https://github.com/anysearch-team/anysearch-dsh/issues)。
 - 网页提取通过 Harness 原生 `web_fetch` 暴露；插件不会再增加一个重复的 `anysearch_extract` 工具。
 - 请通过插件自己的插件行页面（插件 → `@anysearch/anysearch-dsh` → 配置），或 DSH 管理的凭据文件与环境变量配置 API Key。
+- 插件详情页还会显示原生 `web_search` / `web_fetch` 当前解析到的搜索源，并可一键双向切换：切到 AnySearch，或恢复原生 Search API 组合（即原生 Web 搜索开关自己写入的那对 id）。若所选值与 bundle 默认相同，则写入“清除覆盖”而不是存一份副本。这两个字段是 volatile，切换后下一次调用即生效，无需重启。
 
 ## 文档
 

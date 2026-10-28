@@ -126,6 +126,7 @@ npx -y @deepseek-ai/dsh plugin --profile web remove @anysearch/anysearch-dsh
 - New DSH versions are allowed by default, including alpha and rc releases; the tested matrix is not an installation allowlist. Report actual compatibility problems in [issues](https://github.com/anysearch-team/anysearch-dsh/issues).
 - URL extraction is exposed through Harness's provider-neutral `web_fetch`; the plugin does not add a duplicate `anysearch_extract` tool.
 - Configure the API key from the plugin's own Plugins row page, or through DSH-managed credentials or an environment variable.
+- The plugin's detail page also reports which provider the native `web_search` and `web_fetch` currently resolve, and toggles both in one click: to AnySearch, or back to the native Search API pair (the ids the native Web-search switch itself writes). A selection equal to the bundle default is stored as a cleared override, not a copy. Both fields are volatile, so the next call applies the switch without a restart.
 
 ## Documentation
 
